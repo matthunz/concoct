@@ -7,6 +7,10 @@ module Concoct
     readStateRef,
     writeStateRef,
 
+    -- * ViewRef
+    ViewRef,
+    readViewRef,
+
     -- * ViewTree
     ViewTree,
     viewTree,

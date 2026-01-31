@@ -16,6 +16,10 @@ module Concoct.Internal
     readStateRef,
     writeStateRef,
 
+    -- * ViewRef
+    ViewRef (..),
+    readViewRef,
+
     -- * Stack
     Stack (..),
     emptyStack,
@@ -47,19 +51,10 @@ import Control.Monad.State
 import Data.Dynamic
 import Data.IORef
 
-data StateRef a = StateRef
-  { stateRef :: IORef a,
-    stateRefUpdater :: IO () -> IO ()
-  }
-
-readStateRef :: (MonadIO m) => StateRef a -> m a
-readStateRef = liftIO . readIORef . stateRef
-
-writeStateRef :: (MonadIO m) => StateRef a -> a -> m ()
-writeStateRef ref = liftIO . stateRefUpdater ref . writeIORef (stateRef ref)
-
 class (Monad m) => MonadView t m | m -> t where
   useState :: (Typeable a) => t a -> m (StateRef a)
+
+  useRef :: (Typeable a) => t a -> m (ViewRef a)
 
   useEffect :: (Eq d, Typeable d) => t d -> (d -> t ()) -> m ()
 
@@ -76,6 +71,22 @@ class (Monad m) => MonadView t m | m -> t where
     m ()
 
   listView :: (Typeable a, Eq a) => t [a] -> (a -> (forall x. (MonadView t x) => x ())) -> m ()
+
+data StateRef a = StateRef
+  { stateRef :: IORef a,
+    stateRefUpdater :: IO () -> IO ()
+  }
+
+readStateRef :: (MonadIO m) => StateRef a -> m a
+readStateRef = liftIO . readIORef . stateRef
+
+writeStateRef :: (MonadIO m) => StateRef a -> a -> m ()
+writeStateRef ref = liftIO . stateRefUpdater ref . writeIORef (stateRef ref)
+
+newtype ViewRef a = ViewRef a
+
+readViewRef :: (Applicative m) => ViewRef a -> m a
+readViewRef (ViewRef a) = pure a
 
 data Stack = Stack
   { stackBefore :: [Dynamic],
@@ -126,6 +137,11 @@ instance (MonadIO m) => MonadView m (ViewBuilder m) where
     let sRef = StateRef ref $ viewUpdater vs
     put vs {viewStack = pushStack sRef (viewStack vs)}
     return sRef
+  useRef a = ViewBuilder $ do
+    a' <- lift a
+    let vRef = ViewRef a'
+    modify $ \vs -> vs {viewStack = pushStack vRef (viewStack vs)}
+    return vRef
   useEffect deps f = ViewBuilder $ do
     deps' <- lift deps
     modify $ \vs -> vs {viewStack = pushStack deps' (viewStack vs)}
@@ -157,6 +173,7 @@ newtype ViewRebuilder m a = ViewRebuilder {unViewRebuilder :: StateT ViewState m
 
 instance (MonadIO m) => MonadView m (ViewRebuilder m) where
   useState _ = ViewRebuilder $ rebuildState
+  useRef _ = ViewRebuilder $ rebuildRef
   useEffect deps f = ViewRebuilder $ do
     mdep <- gets $ peekStack . viewStack
     case mdep of
@@ -225,6 +242,7 @@ newtype ViewSkipper m a = ViewSkipper {unViewSkipper :: StateT ViewState m a}
 
 instance (MonadIO m) => MonadView m (ViewSkipper m) where
   useState _ = ViewSkipper rebuildState
+  useRef _ = ViewSkipper rebuildRef
   useEffect _ _ = return ()
   useOnUnmount _ = return ()
   component v = ViewSkipper $ rebuildComponent unViewRebuilder unViewSkipper v
@@ -256,6 +274,11 @@ instance (MonadIO m) => MonadView m (ViewUnmounter m) where
   useState _ = ViewUnmounter $ do
     stack <- get
     let (ref, stack') = rebuildState' stack
+    put stack'
+    return ref
+  useRef _ = ViewUnmounter $ do
+    stack <- get
+    let (ref, stack') = rebuildRef' stack
     put stack'
     return ref
   useEffect _ _ = ViewUnmounter $ modify skipStack
@@ -295,6 +318,20 @@ rebuildState' s = do
   case mref of
     Just ref -> (ref, s')
     Nothing -> error "useState: StateRef not found in stack during rebuild"
+
+rebuildRef :: (Monad m, Typeable a) => StateT ViewState m (ViewRef a)
+rebuildRef = do
+  vs <- get
+  let (ref, s') = rebuildRef' (viewStack vs)
+  put vs {viewStack = s'}
+  return ref
+
+rebuildRef' :: (Typeable a) => Stack -> (ViewRef a, Stack)
+rebuildRef' s = do
+  let (mref, s') = popStack s
+  case mref of
+    Just ref -> (ref, s')
+    Nothing -> error "useRef: ViewRef not found in stack during rebuild"
 
 rebuildComponent ::
   (MonadIO m, MonadView t f, MonadView t g) =>
