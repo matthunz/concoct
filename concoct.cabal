@@ -11,7 +11,13 @@ extra-doc-files: CHANGELOG.md
 library
     exposed-modules:
         Concoct
-        Concoct.Internal
+        Concoct.View
+        Concoct.View.Build
+        Concoct.View.Internal
+        Concoct.View.Rebuild
+        Concoct.View.Skip
+        Concoct.View.Tree
+        Concoct.View.Unmount
 
     hs-source-dirs:   src
     default-language: Haskell2010
