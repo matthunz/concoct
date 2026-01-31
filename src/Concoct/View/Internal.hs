@@ -48,40 +48,74 @@ import Control.Monad.State
 import Data.Dynamic
 import Data.IORef
 
+-- | Monadic view.
+--
+-- Views are interpreted in multiple passes:
+--
+-- * Build
+-- * Rebuild
+-- * Skip
+-- * Unmount
+--
+-- And can be extended for further passes, such as layout or render.
+--
+-- Hooks provide access to values in a view across passes.
+--
+-- Views are seperated into @component@s, with each providing a scope for updates to occur.
+-- A @component@ will only be rebuilt if its state is changed.
+-- If a component containing children is updated, its children are rebuilt as well.
 class (Monad m) => MonadView t m | m -> t where
+  -- | Hook to use a mutable state reference.
   useState :: (Typeable a) => t a -> m (StateRef a)
 
+  -- | Hook to use a constant view reference.
   useRef :: (Typeable a) => t a -> m (ViewRef a)
 
+  -- | Hook to use an effect that runs when dependencies change.
   useEffect :: (Eq d, Typeable d) => t d -> (d -> t ()) -> m ()
 
+  -- | Hook that runs when the current component is unmounted.
   useOnUnmount :: t () -> m ()
 
+  -- | Component view.
   component :: (forall x. (MonadView t x) => x ()) -> m ()
 
+  -- | Lift a monadic action into the view.
   liftView :: t () -> m ()
 
+  -- | Conditional view.
+  -- This will render the first view if the condition is @True@, otherwise the second.
   switchView ::
     t Bool ->
     (forall x. (MonadView t x) => x ()) ->
     (forall x. (MonadView t x) => x ()) ->
     m ()
 
+  -- | List view.
+  -- This will render a view for each item in the list.
   listView :: (Typeable a, Eq a) => t [a] -> (a -> (forall x. (MonadView t x) => x ())) -> m ()
 
+-- | State reference.
+-- Created with @useState@.
 data StateRef a = StateRef
   { stateRef :: IORef a,
     stateRefUpdater :: IO () -> IO ()
   }
 
+-- | Read a state reference.
 readStateRef :: (MonadIO m) => StateRef a -> m a
 readStateRef = liftIO . readIORef . stateRef
 
+-- | Write to a state reference.
+-- This will schedule an update to the current @component@.
 writeStateRef :: (MonadIO m) => StateRef a -> a -> m ()
 writeStateRef ref = liftIO . stateRefUpdater ref . writeIORef (stateRef ref)
 
+-- | View reference.
+-- Created with @useRef@.
 newtype ViewRef a = ViewRef a
 
+-- | Read a view reference.
 readViewRef :: (Applicative m) => ViewRef a -> m a
 readViewRef (ViewRef a) = pure a
 

@@ -24,6 +24,7 @@ import Concoct.View.Unmount
 import Control.Monad.IO.Class
 import Data.IORef
 
+-- | View tree.
 data ViewTree t = ViewTree
   { viewTreeView :: forall m. (MonadView t m) => m (),
     viewTreeStack :: Stack,
@@ -31,6 +32,7 @@ data ViewTree t = ViewTree
     viewTreePendingUpdates :: IORef (IO ())
   }
 
+-- | Create a view tree from a view.
 viewTree :: (MonadIO t) => (forall m. (MonadView t m) => m ()) -> t (ViewTree t)
 viewTree v = do
   changedRef <- liftIO $ newIORef False
@@ -40,6 +42,7 @@ viewTree v = do
   (_, s') <- runBuild v s
   return (ViewTree v (flushStack $ viewStack s') changedRef pendingRef)
 
+-- | Rebuild the view tree if changed.
 rebuildViewTree :: (MonadIO t) => ViewTree t -> t (ViewTree t)
 rebuildViewTree t = do
   pending <- liftIO $ readIORef (viewTreePendingUpdates t)
@@ -59,6 +62,7 @@ rebuildViewTree t = do
       (_, s') <- runSkip (viewTreeView t) s
       return t {viewTreeStack = flushStack $ viewStack s'}
 
+-- | Unmount the view tree.
 unmountViewTree :: (MonadIO t) => ViewTree t -> t (ViewTree t)
 unmountViewTree t = do
   (_, stack') <- runUnmount (viewTreeView t) (viewTreeStack t)
