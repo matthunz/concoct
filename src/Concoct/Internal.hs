@@ -48,16 +48,14 @@ import Data.IORef
 
 data StateRef a = StateRef
   { stateRef :: IORef a,
-    stateRefUpdater :: IO ()
+    stateRefUpdater :: IO () -> IO ()
   }
 
 readStateRef :: (MonadIO m) => StateRef a -> m a
 readStateRef = liftIO . readIORef . stateRef
 
 writeStateRef :: (MonadIO m) => StateRef a -> a -> m ()
-writeStateRef ref a = liftIO $ do
-  writeIORef (stateRef ref) a
-  stateRefUpdater ref
+writeStateRef ref = liftIO . stateRefUpdater ref . writeIORef (stateRef ref)
 
 class (Monad m) => MonadView t m | m -> t where
   useState :: (Typeable a) => t a -> m (StateRef a)
@@ -69,6 +67,12 @@ class (Monad m) => MonadView t m | m -> t where
   component :: (forall x. (MonadView t x) => x ()) -> m ()
 
   liftView :: t () -> m ()
+
+  switchView ::
+    t Bool ->
+    (forall x. (MonadView t x) => x ()) ->
+    (forall x. (MonadView t x) => x ()) ->
+    m ()
 
 data Stack = Stack
   { stackBefore :: [Dynamic],
@@ -105,7 +109,7 @@ flushStack (Stack before after) = Stack [] (reverse before ++ after)
 
 data ViewState = ViewState
   { viewStack :: Stack,
-    viewUpdater :: IO ()
+    viewUpdater :: IO () -> IO ()
   }
 
 newtype ViewBuilder m a = ViewBuilder {unViewBuilder :: StateT ViewState m a}
@@ -126,13 +130,17 @@ instance (MonadIO m) => MonadView m (ViewBuilder m) where
   useOnUnmount _ = return ()
   component vb = ViewBuilder $ do
     ref <- liftIO $ newIORef False
-    let updater = writeIORef ref True
+    let updater m = writeIORef ref True >> m
     vs <- get
     put vs {viewUpdater = updater, viewStack = pushStack ref (viewStack vs)}
     unViewBuilder vb
     vs' <- get
     put vs' {viewUpdater = viewUpdater vs}
   liftView = ViewBuilder . lift
+  switchView cond vTrue vFalse = ViewBuilder $ do
+    cond' <- lift cond
+    modify $ \vs -> vs {viewStack = pushStack cond' (viewStack vs)}
+    if cond' then unViewBuilder vTrue else unViewBuilder vFalse
 
 runViewBuilder :: (MonadIO m) => ViewBuilder m a -> ViewState -> m (a, ViewState)
 runViewBuilder vb = runStateT (unViewBuilder vb)
@@ -154,6 +162,25 @@ instance (MonadIO m) => MonadView m (ViewRebuilder m) where
   useOnUnmount _ = return ()
   component v = ViewRebuilder $ rebuildComponent unViewRebuilder unViewRebuilder v
   liftView = ViewRebuilder . lift
+  switchView cond vTrue vFalse = ViewRebuilder $ do
+    vs <- get
+    let (mcond, s') = popStack (viewStack vs)
+    case mcond of
+      Just oldCond -> do
+        cond' <- lift cond
+        if oldCond == cond'
+          then do
+            put vs {viewStack = pushStack cond' s'}
+            if cond' then unViewRebuilder vTrue else unViewRebuilder vFalse
+          else do
+            put vs {viewStack = pushStack cond' s'}
+            if oldCond
+              then unViewSkipper vTrue
+              else unViewSkipper vFalse
+            if cond'
+              then unViewBuilder vTrue
+              else unViewBuilder vFalse
+      Nothing -> error "switchView: Condition not found in stack during rebuild"
 
 runViewRebuilder :: (MonadIO m) => ViewRebuilder m a -> ViewState -> m (a, ViewState)
 runViewRebuilder vr = runStateT (unViewRebuilder vr)
@@ -167,6 +194,14 @@ instance (MonadIO m) => MonadView m (ViewSkipper m) where
   useOnUnmount _ = return ()
   component v = ViewSkipper $ rebuildComponent unViewRebuilder unViewSkipper v
   liftView _ = return ()
+  switchView _ vTrue vFalse = ViewSkipper $ do
+    vs <- get
+    let (mcond, s') = popStack (viewStack vs)
+    case mcond of
+      Just cond' -> do
+        put vs {viewStack = pushStack cond' s'}
+        if cond' then unViewSkipper vTrue else unViewSkipper vFalse
+      Nothing -> error "switchView: Condition not found in stack during skip"
 
 runViewSkipper :: (MonadIO m) => ViewSkipper m a -> ViewState -> m (a, ViewState)
 runViewSkipper vs = runStateT (unViewSkipper vs)
@@ -186,6 +221,13 @@ instance (MonadIO m) => MonadView m (ViewUnmounter m) where
     modify skipStack
     unViewUnmounter v
   liftView _ = return ()
+  switchView _ vTrue vFalse = ViewUnmounter $ do
+    stack <- get
+    let (mcond, stack') = popStack stack
+    put stack'
+    case mcond of
+      Just cond' -> if cond' then unViewUnmounter vTrue else unViewUnmounter vFalse
+      Nothing -> error "switchView: Condition not found in stack during unmount"
 
 runViewUnmounter :: (MonadIO m) => ViewUnmounter m a -> Stack -> m (a, Stack)
 runViewUnmounter vu = runStateT (unViewUnmounter vu)
@@ -229,31 +271,37 @@ rebuildComponent f g v = do
 data ViewTree t = ViewTree
   { viewTreeView :: forall m. (MonadView t m) => m (),
     viewTreeStack :: Stack,
-    viewTreeChanged :: IORef Bool
+    viewTreeChanged :: IORef Bool,
+    viewTreePendingUpdates :: IORef (IO ())
   }
 
 viewTree :: (MonadIO t) => (forall m. (MonadView t m) => m ()) -> t (ViewTree t)
 viewTree v = do
-  ref <- liftIO $ newIORef False
-  let updater = writeIORef ref True
+  changedRef <- liftIO $ newIORef False
+  pendingRef <- liftIO $ newIORef (pure ())
+  let updater m = modifyIORef pendingRef (>> m) >> writeIORef changedRef True
       s = ViewState emptyStack updater
   (_, s') <- runStateT (unViewBuilder v) s
-  return (ViewTree v (flushStack $ viewStack s') ref)
+  return (ViewTree v (flushStack $ viewStack s') changedRef pendingRef)
 
 rebuildViewTree :: (MonadIO t) => ViewTree t -> t (ViewTree t)
 rebuildViewTree t = do
+  pending <- liftIO $ readIORef (viewTreePendingUpdates t)
+  liftIO pending
+  liftIO $ writeIORef (viewTreePendingUpdates t) (pure ())
   changed <- liftIO $ readIORef (viewTreeChanged t)
   if changed
     then do
-      let updater = writeIORef (viewTreeChanged t) False
+      liftIO $ writeIORef (viewTreeChanged t) False
+      let updater m = modifyIORef (viewTreePendingUpdates t) (>> m) >> writeIORef (viewTreeChanged t) True
           s = ViewState (viewTreeStack t) updater
       (_, s') <- runStateT (unViewRebuilder $ viewTreeView t) s
-      return (ViewTree (viewTreeView t) (flushStack $ viewStack s') (viewTreeChanged t))
+      return t {viewTreeStack = flushStack $ viewStack s'}
     else do
-      let updater = writeIORef (viewTreeChanged t) False
+      let updater m = modifyIORef (viewTreePendingUpdates t) (>> m) >> writeIORef (viewTreeChanged t) True
           s = ViewState (viewTreeStack t) updater
       (_, s') <- runStateT (unViewSkipper $ viewTreeView t) s
-      return (ViewTree (viewTreeView t) (flushStack $ viewStack s') (viewTreeChanged t))
+      return t {viewTreeStack = flushStack $ viewStack s'}
 
 unmountViewTree :: (MonadIO t) => ViewTree t -> t (ViewTree t)
 unmountViewTree t = do

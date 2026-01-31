@@ -12,6 +12,11 @@ counter = do
     putStrLn $ "Count: " ++ show c
     writeStateRef count $ c + 1
 
+  switchView
+    (even <$> readStateRef count)
+    (liftView $ putStrLn "Even!")
+    (liftView $ putStrLn "Odd!")
+
   useOnUnmount $ do
     c <- readStateRef count
     putStrLn $ "Unmount:" ++ show c
