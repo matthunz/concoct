@@ -1,0 +1,60 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hackage:
+    name: Publish to Hackage
+    if: github.repository == 'matthunz/concoct'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxi-dev libxrandr-dev libxxf86vm-dev libxcursor-dev libxinerama-dev
+
+      - name: Setup Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.10.1"
+          cabal-version: "latest"
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ runner.os }}-cabal-${{ hashFiles('**/*.cabal') }}
+          restore-keys: |
+            ${{ runner.os }}-cabal-
+
+      - name: Build dependencies
+        run: cabal build --only-dependencies
+
+      - name: Clean old artifacts
+        run: |
+          rm -rf dist-newstyle/sdist
+          rm -rf dist-newstyle/*-docs.tar.gz
+
+      - name: Create source distribution
+        run: cabal sdist
+
+      - name: Build Haddock documentation for Hackage
+        run: cabal haddock --haddock-for-hackage --enable-doc
+
+      - name: Publish to Hackage
+        env:
+          HACKAGE_TOKEN: ${{ secrets.HACKAGE_TOKEN }}
+        run: |
+          cabal upload --publish --token "$HACKAGE_TOKEN" dist-newstyle/sdist/*.tar.gz
+
+      - name: Upload documentation to Hackage
+        env:
+          HACKAGE_TOKEN: ${{ secrets.HACKAGE_TOKEN }}
+        run: |
+          cabal upload --publish --token "$HACKAGE_TOKEN" -d dist-newstyle/*-docs.tar.gz
