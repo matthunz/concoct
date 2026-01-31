@@ -12,8 +12,13 @@ counter = do
     putStrLn $ "Count: " ++ show c
     writeStateRef count $ c + 1
 
+  useOnUnmount $ do
+    c <- readStateRef count
+    putStrLn $ "Unmount:" ++ show c
+
 main :: IO ()
 main = do
   t <- viewTree counter
-  _ <- rebuildViewTree t
+  t' <- rebuildViewTree t
+  _ <- unmountViewTree t'
   return ()

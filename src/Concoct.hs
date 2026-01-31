@@ -11,6 +11,7 @@ module Concoct
     ViewTree,
     viewTree,
     rebuildViewTree,
+    unmountViewTree,
   )
 where
 
