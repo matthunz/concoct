@@ -8,8 +8,7 @@ counter :: (MonadView IO m) => m ()
 counter = do
   count <- useState $ pure (0 :: Int)
 
-  liftView $ do
-    c <- readStateRef count
+  useEffect (readStateRef count) $ \c -> do
     putStrLn $ "Count: " ++ show c
     writeStateRef count $ c + 1
 

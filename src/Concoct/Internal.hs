@@ -34,6 +34,7 @@ module Concoct.Internal
   )
 where
 
+import Control.Monad
 import Control.Monad.State
 import Data.Dynamic
 import Data.IORef
@@ -53,6 +54,8 @@ writeStateRef ref a = liftIO $ do
 
 class (Monad m) => MonadView t m | m -> t where
   useState :: (Typeable a) => t a -> m (StateRef a)
+
+  useEffect :: (Eq d, Typeable d) => t d -> (d -> t ()) -> m ()
 
   component :: (forall x. (MonadView t x) => x ()) -> m ()
 
@@ -76,6 +79,14 @@ popStack (Stack (d : ds) after) =
     Just a -> (Just a, Stack ds after)
     Nothing -> popStack (Stack ds after)
 
+peekStack :: (Typeable a) => Stack -> Maybe a
+peekStack (Stack [] _) = Nothing
+peekStack (Stack (d : _) _) = fromDynamic d
+
+setStack :: (Typeable a) => a -> Stack -> Stack
+setStack a (Stack (_ : ds) after) = Stack (toDyn a : ds) after
+setStack _ s = s
+
 flushStack :: Stack -> Stack
 flushStack (Stack before after) = Stack (reverse before ++ after) []
 
@@ -95,6 +106,10 @@ instance (MonadIO m) => MonadView m (ViewBuilder m) where
     let sRef = StateRef ref $ viewUpdater vs
     put vs {viewStack = pushStack sRef (viewStack vs)}
     return sRef
+  useEffect deps f = ViewBuilder $ do
+    deps' <- lift deps
+    modify $ \vs -> vs {viewStack = pushStack deps' (viewStack vs)}
+    lift $ f deps'
   component vb = ViewBuilder $ do
     ref <- liftIO $ newIORef False
     let updater = writeIORef ref True
@@ -110,6 +125,15 @@ newtype ViewRebuilder m a = ViewRebuilder {unViewRebuilder :: StateT ViewState m
 
 instance (MonadIO m) => MonadView m (ViewRebuilder m) where
   useState _ = ViewRebuilder $ rebuildState
+  useEffect deps f = ViewRebuilder $ do
+    mdep <- gets $ peekStack . viewStack
+    case mdep of
+      Just oldDeps -> do
+        deps' <- lift deps
+        when (oldDeps /= deps') $ do
+          modify $ \vs -> vs {viewStack = setStack deps' (viewStack vs)}
+          lift $ f deps'
+      Nothing -> error "useEffect: Dependencies not found in stack during rebuild"
   component vb = ViewRebuilder $ do
     vs <- get
     let (mref, s') = popStack (viewStack vs)
@@ -128,6 +152,7 @@ newtype ViewSkipper m a = ViewSkipper {unViewSkipper :: StateT ViewState m a}
 
 instance (MonadIO m) => MonadView m (ViewSkipper m) where
   useState _ = ViewSkipper rebuildState
+  useEffect _ _ = return ()
   component vb = ViewSkipper $ do
     vs <- get
     let (mref, s') = popStack (viewStack vs)
