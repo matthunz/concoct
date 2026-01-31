@@ -1,5 +1,9 @@
 # Concoct
 
+[![License](https://img.shields.io/badge/license-BSD3-blue.svg)](https://github.com/matthunz/concoct/blob/main/LICENSE)
+[![Package](https://img.shields.io/hackage/v/concoct.svg)](https://hackage.haskell.org/package/concoct)
+[![CI status](https://github.com/matthunz/concoct/actions/workflows/ci.yml/badge.svg)](https://github.com/matthunz/concoct/actions)
+
 A declarative user-interface framework for Haskell
 
 ```hs
