@@ -1,6 +1,6 @@
 # Concoct
 
-A reactive user-interface framework for Haskell
+A declarative user-interface framework for Haskell
 
 ```hs
 counter :: (MonadView IO m) => m ()
