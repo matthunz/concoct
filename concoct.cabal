@@ -1,0 +1,35 @@
+cabal-version:   3.0
+name:            concoct
+version:         0.1.0.0
+license:         BSD-3-Clause
+license-file:    LICENSE
+maintainer:      matt@hunzinger.me
+author:          Matt Hunzinger
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+library
+    exposed-modules:  MyLib
+    hs-source-dirs:   src
+    default-language: Haskell2010
+    ghc-options:      -Wall
+    build-depends:    base ^>=4.20.0.0
+
+executable concoct
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    ghc-options:      -Wall
+    build-depends:
+        base ^>=4.20.0.0,
+        concoct
+
+test-suite concoct-test
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test
+    default-language: Haskell2010
+    ghc-options:      -Wall
+    build-depends:
+        base ^>=4.20.0.0,
+        concoct
