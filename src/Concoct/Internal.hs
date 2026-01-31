@@ -4,6 +4,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Concoct.Internal
@@ -74,6 +75,8 @@ class (Monad m) => MonadView t m | m -> t where
     (forall x. (MonadView t x) => x ()) ->
     m ()
 
+  listView :: (Typeable a, Eq a) => t [a] -> (a -> (forall x. (MonadView t x) => x ())) -> m ()
+
 data Stack = Stack
   { stackBefore :: [Dynamic],
     stackAfter :: [Dynamic]
@@ -141,6 +144,10 @@ instance (MonadIO m) => MonadView m (ViewBuilder m) where
     cond' <- lift cond
     modify $ \vs -> vs {viewStack = pushStack cond' (viewStack vs)}
     if cond' then unViewBuilder vTrue else unViewBuilder vFalse
+  listView items f = ViewBuilder $ do
+    items' <- lift items
+    modify $ \vs -> vs {viewStack = pushStack items' (viewStack vs)}
+    mapM_ (unViewBuilder . f) items'
 
 runViewBuilder :: (MonadIO m) => ViewBuilder m a -> ViewState -> m (a, ViewState)
 runViewBuilder vb = runStateT (unViewBuilder vb)
@@ -181,6 +188,34 @@ instance (MonadIO m) => MonadView m (ViewRebuilder m) where
               then unViewBuilder vTrue
               else unViewBuilder vFalse
       Nothing -> error "switchView: Condition not found in stack during rebuild"
+  listView items f = ViewRebuilder $ do
+    vs <- get
+    let (mOldItems, s') = popStack (viewStack vs)
+    case mOldItems of
+      Just oldItems -> do
+        items' <- lift items
+        put vs {viewStack = pushStack items' s'}
+        -- Update shared items
+        let common = zip oldItems items'
+            oldLen = length oldItems
+            newLen = length items'
+        forM_ common $ \(old, new) ->
+          if old == new
+            then unViewSkipper (f old)
+            else do
+              unViewSkipper (f old)
+              unViewBuilder (f new)
+        -- Unmount removed items
+        when (oldLen > newLen) $
+          forM_ (drop newLen oldItems) $ \old -> do
+            vs' <- get
+            (_, stack') <- lift $ runViewUnmounter (f old) (viewStack vs')
+            put vs' {viewStack = stack'}
+        -- Build added items
+        when (newLen > oldLen) $
+          forM_ (drop oldLen items') $ \new ->
+            unViewBuilder (f new)
+      Nothing -> error "listView: Items not found in stack during rebuild"
 
 runViewRebuilder :: (MonadIO m) => ViewRebuilder m a -> ViewState -> m (a, ViewState)
 runViewRebuilder vr = runStateT (unViewRebuilder vr)
@@ -202,6 +237,14 @@ instance (MonadIO m) => MonadView m (ViewSkipper m) where
         put vs {viewStack = pushStack cond' s'}
         if cond' then unViewSkipper vTrue else unViewSkipper vFalse
       Nothing -> error "switchView: Condition not found in stack during skip"
+  listView _ f = ViewSkipper $ do
+    vs <- get
+    let (mItems, s') = popStack @[_] (viewStack vs)
+    case mItems of
+      Just items' -> do
+        put vs {viewStack = pushStack items' s'}
+        mapM_ (unViewSkipper . f) items'
+      Nothing -> error "listView: Items not found in stack during skip"
 
 runViewSkipper :: (MonadIO m) => ViewSkipper m a -> ViewState -> m (a, ViewState)
 runViewSkipper vs = runStateT (unViewSkipper vs)
@@ -228,6 +271,13 @@ instance (MonadIO m) => MonadView m (ViewUnmounter m) where
     case mcond of
       Just cond' -> if cond' then unViewUnmounter vTrue else unViewUnmounter vFalse
       Nothing -> error "switchView: Condition not found in stack during unmount"
+  listView _ f = ViewUnmounter $ do
+    stack <- get
+    let (mItems, stack') = popStack @[_] stack
+    put stack'
+    case mItems of
+      Just items' -> mapM_ (unViewUnmounter . f) items'
+      Nothing -> error "listView: Items not found in stack during unmount"
 
 runViewUnmounter :: (MonadIO m) => ViewUnmounter m a -> Stack -> m (a, Stack)
 runViewUnmounter vu = runStateT (unViewUnmounter vu)
